@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Hebei Province Word Cloud</title>
+    <script src="https://d3js.org/d3.v5.min.js"></script>
+    <script src="https://d3js.org/topojson.v3.min.js"></script>
+    <script src="https://unpkg.com/rbush@2.0.1/rbush.min.js"></script>
+</head>
+
+<body>
+    <svg width="960" height="600"></svg>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const svg = d3.select("svg"),
+                width = +svg.attr("width"),
+                height = +svg.attr("height");
+
+            const projection = d3.geoMercator().scale(1).translate([width / 2, height / 2]);
+
+            const tree = rbush();
+
+            d3.json("../output.json").then(function (data) {
+                const hebei = topojson.merge(data, data.objects['130000'].geometries);
+                projection.fitSize([width, height], hebei);
+                const path = d3.geoPath().projection(projection);
+
+                // 绘制地图
+                svg.append("path")
+                    .datum(hebei)
+                    .attr("d", path)
+                    .attr("fill", "none")
+                    .attr("stroke", "black");
+
+                // 定义要放置的文字
+                const words = Array.from({ length: 20 }, (_, i) => ({
+                    text: 'hebei' + i,
+                    frequency: Math.random() * 10 // 用随机数模拟词频
+                }));
+
+                // 放置文字
+                placeWords(svg, projection, words, hebei, tree);
+            });
+
+
+            function getRandomY(minY, maxY) {
+                return Math.floor(Math.random() * (maxY - minY + 1)) + minY;
+            }
+
+
+            function placeWords(svg, projection, words, region, tree) {
+                const maxHeight = +svg.attr("height");
+                const maxAttempts = 50; // 最大尝试次数，防止无限循环
+                const lineHeight = 5; // 行高，可以根据需要调整
+
+                words.forEach(word => {
+
+                    let placed = false;
+                    let attempts = 0;
+                    // 从顶部向下搜索可放置位置
+                    while (!placed && attempts < maxAttempts) {
+                        let currentY = getRandomY(0, maxHeight);
+                        // visualizeHorizontalDistance(currentY, projection, region, svg, width);
+
+                        const ranges = getIntersectionRangesAtY(currentY, projection, region, width);
+
+                        ranges.forEach(range => {
+                            const midX = range.midX;
+
+                            // 在 placeWords 函数或相关逻辑中
+                            let fontSize = findMaxFontSizeForWord(svg, projection, region, word.text, range.width, midX, currentY);
+
+                            const { wordWidth, wordHeight } = estimateTextSize(word.text, fontSize);
+
+                            //===============================================================
+
+                            const bbox = {
+                                minX: midX - wordWidth / 2,
+                                minY: currentY - wordHeight / 2,
+                                maxX: midX + wordWidth / 2,
+                                maxY: currentY + wordHeight / 2
+                            };
+
+                            if (isBboxWithinGeojson(bbox, region, projection)) {
+                                const overlaps = tree.search(bbox);
+                                if (overlaps.length === 0) {
+                                    // 可视化 bbox
+                                    // svg.append("rect")
+                                    //     .attr("x", bbox.minX)
+                                    //     .attr("y", bbox.minY)
+                                    //     .attr("width", wordWidth)
+                                    //     .attr("height", wordHeight)
+                                    //     .attr("stroke", "red")
+                                    //     .attr("fill", "none");
+
+                                    // 不重叠，添加标签
+                                    svg.append("text")
+                                        .attr("x", midX)
+                                        .attr("y", currentY)
+                                        .text(word.text)
+                                        .attr("fill", "black")
+                                        .attr("font-size", fontSize + "px")
+                                        .attr("text-anchor", "middle")
+                                        .attr("dominant-baseline", "central"); // 确保文本垂直居中
+
+                                    // 将标签的包围盒添加到 R-tree
+                                    tree.insert(bbox);
+                                    placed = true;
+                                    // currentY += wordHeight + 2
+                                    console.log("" + fontSize)
+                                    return;
+                                }
+                            }
+
+                        });
+                        // 如果当前位置放不下，向下移动一行
+                        if (!placed) {
+                            currentY += lineHeight;
+                        }
+                        attempts++;
+                    }
+
+                    if (!placed) {
+                        console.warn(`无法放置标签: ${word.text}`);
+                    }
+                })
+
+
+
+            }
+
+
+
+            function getIntersectionRangesAtY(y, projection, geojson, width) {
+                let xValues = [];
+                for (let x = 0; x < width; x++) {
+                    const point = projection.invert([x, y]);
+                    if (point && point[0] !== Infinity && point[1] !== Infinity && d3.geoContains(geojson, point)) {
+                        xValues.push(x);
+                    }
+                }
+                if (xValues.length > 0) {
+                    let ranges = [];
+                    let rangeStart = xValues[0];
+                    for (let i = 1; i < xValues.length; i++) {
+                        if (xValues[i] - xValues[i - 1] > 1) {
+                            const rangeEnd = xValues[i - 1];
+                            ranges.push({ minX: rangeStart, maxX: rangeEnd, width: rangeEnd - rangeStart, midX: (rangeStart + rangeEnd) / 2 });
+                            rangeStart = xValues[i];
+                        }
+                    }
+                    const rangeEnd = xValues[xValues.length - 1];
+                    ranges.push({ minX: rangeStart, maxX: rangeEnd, width: rangeEnd - rangeStart, midX: (rangeStart + rangeEnd) / 2 });
+                    return ranges;
+                }
+                return [];
+            }
+
+            function visualizeHorizontalDistance(y, projection, geojson, svg, width) {
+                const ranges = getIntersectionRangesAtY(y, projection, geojson, width);
+
+                // 可视化水平距离和中点
+                ranges.forEach(range => {
+                    // 绘制水平线
+                    svg.append("line")
+                        .attr("x1", range.minX)
+                        .attr("y1", y)
+                        .attr("x2", range.maxX)
+                        .attr("y2", y)
+                        .attr("stroke", "yellow")
+                        .attr("stroke-width", 2);
+
+                    // 添加文本标签显示距离
+                    svg.append("text")
+                        .attr("x", range.midX)
+                        .attr("y", y - 10)
+                        .text(`距离: ${range.width} 像素`)
+                        .attr("fill", "black")
+                        .attr("font-size", "12px")
+                        .attr("text-anchor", "middle");
+
+                    // 可视化水平线的中点
+                    svg.append("circle")
+                        .attr("cx", range.midX)
+                        .attr("cy", y)
+                        .attr("r", 3)
+                        .attr("fill", "red");
+                });
+            }
+
+
+
+
+            function getHorizontalLineLengthsAtY(y, projection, geojson, width) {
+                const ranges = getIntersectionRangesAtY(y, projection, geojson, width);
+                const lengths = ranges.map(range => range.width); // 提取每个区间的宽度
+                return lengths;
+            }
+
+            function isBboxWithinGeojson(bbox, geojson, projection) {
+                //numPoints需要计算====================修改=========================
+                const numPoints = 20; // 检查每条边的点数
+                let points = [];
+
+                // 获取包围盒的四个角点
+                points.push([bbox.minX, bbox.minY]);
+                points.push([bbox.maxX, bbox.minY]);
+                points.push([bbox.minX, bbox.maxY]);
+                points.push([bbox.maxX, bbox.maxY]);
+
+                // 获取包围盒的四条边上的点
+
+                for (let i = 1; i <= numPoints; i++) {
+                    const t = i / (numPoints + 1);
+                    points.push([bbox.minX + t * (bbox.maxX - bbox.minX), bbox.minY]); // 上边
+                    points.push([bbox.minX + t * (bbox.maxX - bbox.minX), bbox.maxY]); // 下边
+                    points.push([bbox.minX, bbox.minY + t * (bbox.maxY - bbox.minY)]); // 左边
+                    points.push([bbox.maxX, bbox.minY + t * (bbox.maxY - bbox.minY)]); // 右边
+                }
+
+                // 检查所有点是否都在 GeoJSON 区域内
+                return points.every(corner => {
+                    // 将屏幕坐标转换为地理坐标
+                    const point = projection.invert(corner);
+                    // 检查该点是否在 GeoJSON 区域内
+                    return d3.geoContains(geojson, point);
+                });
+            }
+
+            function estimateTextSize(text, fontSize) {
+                // 这里我们假设一个简单的估计值，你可以根据具体需求调整
+                return {
+                    wordWidth: text.length * fontSize * 0.55, // 估计每个字符的宽度约为字体大小的0.6倍
+                    wordHeight: fontSize * 0.9  // 字体高度为字体大小的0.9倍
+                };
+            }
+
+            function findMaxFontSizeForWord(svg, projection, region, text, maxWidth, x, y) {
+                let low = 10;  // 最小字号
+                let high = 60;  // 假设的最大字号，可以根据需要调整
+                let bestFontSize = low;  // 最佳字号初始化
+
+                while (low <= high) {
+                    let mid = Math.floor((low + high) / 2);
+                    let { wordWidth, wordHeight } = estimateTextSize(text, mid);
+
+                    const bbox = {
+                        minX: x - wordWidth / 2,
+                        minY: y - wordHeight / 2,
+                        maxX: x + wordWidth / 2,
+                        maxY: y + wordHeight / 2
+                    };
+
+                    if (wordWidth <= maxWidth && isBboxWithinGeojson(bbox, region, projection)) {
+                        bestFontSize = mid;  // 如果当前字号下的文本宽度小于或等于给定的宽度，且bbox在地图内
+                        low = mid + 1;  // 尝试更大的字号
+                    } else {
+                        high = mid - 1;  // 太大了，尝试更小的字号
+                    }
+                }
+
+                return bestFontSize;
+            }
+
+
+
+
+        });
+
+    </script>
+
+
+</body>
+
+</html>
